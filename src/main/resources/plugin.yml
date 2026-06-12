@@ -1,0 +1,41 @@
+name: PrismClaims
+version: '1.0.0'
+main: com.prismsmp.claims.PrismClaims
+api-version: '1.21'
+description: Lightweight anti-grief land claim plugin for Prism SMP
+author: Prism SMP
+
+commands:
+  claim:
+    description: Claim management commands
+    usage: /<command> [confirm <name>]
+    aliases: [c]
+  delclaim:
+    description: Delete one of your claims
+    usage: /<command> <name>
+  claims:
+    description: List your claims
+    usage: /<command> [player]
+  claimperm:
+    description: Manage claim build permissions
+    usage: /<command> <add|remove> <player> <claim>
+  claimadmin:
+    description: Staff claim administration
+    usage: /<command> <delete|info|list> [args]
+
+permissions:
+  prismclaims.claim:
+    description: Allows creating claims
+    default: true
+  prismclaims.limit.2:
+    description: Allows up to 2 claims
+    default: true
+  prismclaims.limit.5:
+    description: Allows up to 5 claims
+    default: false
+  prismclaims.bypass:
+    description: Bypass all claim protections
+    default: op
+  prismclaims.admin:
+    description: Full claim administration
+    default: op
