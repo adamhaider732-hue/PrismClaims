@@ -13,6 +13,7 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
+import org.bukkit.entity.Snowman;
 
 import java.util.logging.Logger;
 
@@ -135,7 +136,7 @@ public class EntityListener implements Listener {
         if (entity instanceof AbstractVillager) return true;
         if (entity instanceof Tameable tameable) return tameable.isTamed();
         if (entity instanceof IronGolem) return true;
-        if (entity instanceof SnowGolem) return true;
+        if (entity instanceof Snowman) return true;
         return false;
     }
 
