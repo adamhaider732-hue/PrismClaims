@@ -1,6 +1,5 @@
 package com.prismsmp.claims.commands;
 
-import com.prismsmp.claims.PrismClaims;
 import com.prismsmp.claims.managers.ClaimManager;
 import com.prismsmp.claims.models.Claim;
 import com.prismsmp.claims.storage.DatabaseManager;
@@ -8,9 +7,9 @@ import com.prismsmp.claims.storage.DatabaseManager;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextDecoration;
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -18,6 +17,8 @@ import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.plugin.java.JavaPlugin;
 
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -26,11 +27,14 @@ import java.util.stream.Collectors;
 
 public class ClaimCommand implements CommandExecutor, TabCompleter {
 
-    private final PrismClaims plugin;
+    private final JavaPlugin plugin;
     private final ClaimManager claimManager;
     private final DatabaseManager db;
 
-    public ClaimCommand(PrismClaims plugin, ClaimManager claimManager, DatabaseManager db) {
+    public static final NamespacedKey CLAIM_SHOVEL_KEY = new NamespacedKey("prismclaims", "claim_shovel");
+    public static final NamespacedKey LARGE_CLAIM_SHOVEL_KEY = new NamespacedKey("prismclaims", "large_claim_shovel");
+
+    public ClaimCommand(JavaPlugin plugin, ClaimManager claimManager, DatabaseManager db) {
         this.plugin = plugin;
         this.claimManager = claimManager;
         this.db = db;
@@ -48,73 +52,104 @@ public class ClaimCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        // /claim large - OP only, gives netherite large claim shovel
-        if (args.length >= 1 && args[0].equalsIgnoreCase("large")) {
-            if (!player.isOp()) {
-                player.sendMessage(Component.text("Only OPs can use large claims.", NamedTextColor.RED));
-                return true;
-            }
-            claimManager.setLargeMode(player, true);
-            claimManager.clearSelection(player);
-            removeClaimShovel(player);
-            player.getInventory().addItem(createLargeClaimShovel());
-            player.sendMessage(Component.empty());
-            player.sendMessage(Component.text("Large Claim Shovel given!", NamedTextColor.DARK_PURPLE, TextDecoration.BOLD));
-            player.sendMessage(Component.text("Max size: 500x500 | Height: Y 45 to build limit", NamedTextColor.GRAY));
-            player.sendMessage(Component.text("Right-click two blocks to select corners, then /claim confirm <name>", NamedTextColor.GRAY));
-            player.sendMessage(Component.empty());
-            return true;
-        }
-
-        // /claim giveshovel <player> - OP only, gives target player a large claim shovel
-        if (args.length >= 2 && args[0].equalsIgnoreCase("giveshovel")) {
-            if (!player.isOp()) {
-                player.sendMessage(Component.text("Only OPs can use this command.", NamedTextColor.RED));
-                return true;
-            }
-            Player target = plugin.getServer().getPlayer(args[1]);
-            if (target == null) {
-                player.sendMessage(Component.text("Player not found or not online.", NamedTextColor.RED));
-                return true;
-            }
-            claimManager.setLargeMode(target, true);
-            claimManager.clearSelection(target);
-            removeClaimShovel(target);
-            target.getInventory().addItem(createLargeClaimShovel());
-            target.sendMessage(Component.empty());
-            target.sendMessage(Component.text("You received a Large Claim Shovel!", NamedTextColor.DARK_PURPLE, TextDecoration.BOLD));
-            target.sendMessage(Component.text("Max size: 500x500 | Height: Y 45 to build limit", NamedTextColor.GRAY));
-            target.sendMessage(Component.text("Right-click two blocks to select corners, then /claim confirm <name>", NamedTextColor.GRAY));
-            target.sendMessage(Component.empty());
-            player.sendMessage(Component.text("Gave large claim shovel to " + target.getName() + ".", NamedTextColor.GREEN));
-            return true;
-        }
-
-        // /claim confirm <name> - create the claim
-        if (args.length >= 2 && args[0].equalsIgnoreCase("confirm")) {
-            return handleConfirm(player, args[1]);
-        }
-
-        // /claim - give regular claim shovel
         if (args.length == 0) {
-            claimManager.setLargeMode(player, false);
-            claimManager.clearSelection(player);
-            removeClaimShovel(player);
-            player.getInventory().addItem(createClaimShovel());
-            player.sendMessage(Component.empty());
-            player.sendMessage(Component.text("Claim Shovel given!", NamedTextColor.GOLD, TextDecoration.BOLD));
-            player.sendMessage(Component.text("Right-click two blocks to select corners, then /claim confirm <name>", NamedTextColor.GRAY));
-            player.sendMessage(Component.empty());
-            return true;
+            return handleGiveShovel(player);
         }
 
-        // Unknown subcommand
-        player.sendMessage(Component.text("Usage: /claim, /claim confirm <name>", NamedTextColor.GRAY));
+        String sub = args[0].toLowerCase();
+
+        switch (sub) {
+            case "confirm" -> {
+                return handleConfirm(player, args);
+            }
+            case "large" -> {
+                return handleLarge(player);
+            }
+            case "giveshovel" -> {
+                return handleGiveLargeShovel(player, args);
+            }
+            default -> {
+                player.sendMessage(Component.text("Usage: /claim, /claim confirm <name>, /claim large", NamedTextColor.GRAY));
+                return true;
+            }
+        }
+    }
+
+    // =========== /claim (give normal shovel) ===========
+
+    private boolean handleGiveShovel(Player player) {
+        claimManager.setLargeMode(player, false);
+        claimManager.clearSelection(player);
+        removeClaimShovel(player);
+        player.getInventory().addItem(createClaimShovel());
+        player.sendMessage(Component.empty());
+        player.sendMessage(Component.text("Claim Shovel given!", NamedTextColor.GOLD, TextDecoration.BOLD));
+        player.sendMessage(Component.text("Right-click two blocks to select corners, then ", NamedTextColor.GRAY)
+                .append(Component.text("/claim confirm <name>", NamedTextColor.GOLD)));
+        player.sendMessage(Component.empty());
         return true;
     }
 
-    private boolean handleConfirm(Player player, String name) {
-        // Validate name
+    // =========== /claim large (OP only) ===========
+
+    private boolean handleLarge(Player player) {
+        if (!player.isOp()) {
+            player.sendMessage(Component.text("Only OPs can use large claims.", NamedTextColor.RED));
+            return true;
+        }
+        claimManager.setLargeMode(player, true);
+        claimManager.clearSelection(player);
+        removeClaimShovel(player);
+        player.getInventory().addItem(createLargeClaimShovel());
+        player.sendMessage(Component.empty());
+        player.sendMessage(Component.text("Large Claim Shovel given!", NamedTextColor.DARK_PURPLE, TextDecoration.BOLD));
+        player.sendMessage(Component.text("Max size: 500x500 | Height: Y 45 to build limit", NamedTextColor.GRAY));
+        player.sendMessage(Component.text("Right-click two blocks to select corners, then ", NamedTextColor.GRAY)
+                .append(Component.text("/claim confirm <name>", NamedTextColor.GOLD)));
+        player.sendMessage(Component.empty());
+        return true;
+    }
+
+    // =========== /claim giveshovel <player> (OP only) ===========
+
+    private boolean handleGiveLargeShovel(Player player, String[] args) {
+        if (!player.isOp()) {
+            player.sendMessage(Component.text("Only OPs can use this command.", NamedTextColor.RED));
+            return true;
+        }
+        if (args.length < 2) {
+            player.sendMessage(Component.text("Usage: /claim giveshovel <player>", NamedTextColor.RED));
+            return true;
+        }
+        Player target = plugin.getServer().getPlayer(args[1]);
+        if (target == null) {
+            player.sendMessage(Component.text("Player not found or not online.", NamedTextColor.RED));
+            return true;
+        }
+        claimManager.setLargeMode(target, true);
+        claimManager.clearSelection(target);
+        removeClaimShovel(target);
+        target.getInventory().addItem(createLargeClaimShovel());
+        target.sendMessage(Component.empty());
+        target.sendMessage(Component.text("You received a Large Claim Shovel!", NamedTextColor.DARK_PURPLE, TextDecoration.BOLD));
+        target.sendMessage(Component.text("Max size: 500x500 | Height: Y 45 to build limit", NamedTextColor.GRAY));
+        target.sendMessage(Component.text("Right-click two blocks to select corners, then ", NamedTextColor.GRAY)
+                .append(Component.text("/claim confirm <name>", NamedTextColor.GOLD)));
+        target.sendMessage(Component.empty());
+        player.sendMessage(Component.text("Gave large claim shovel to " + target.getName() + ".", NamedTextColor.GREEN));
+        return true;
+    }
+
+    // =========== /claim confirm <name> ===========
+
+    private boolean handleConfirm(Player player, String[] args) {
+        if (args.length < 2) {
+            player.sendMessage(Component.text("Usage: /claim confirm <name>", NamedTextColor.RED));
+            return true;
+        }
+
+        String name = args[1];
+
         if (name.length() > 20) {
             player.sendMessage(Component.text("Claim name must be 20 characters or less.", NamedTextColor.RED));
             return true;
@@ -125,7 +160,6 @@ public class ClaimCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        // Check if player has a complete selection
         if (!claimManager.hasSelection(player)) {
             player.sendMessage(Component.text("You need to select two corners first with the claim shovel!", NamedTextColor.RED));
             return true;
@@ -133,14 +167,12 @@ public class ClaimCommand implements CommandExecutor, TabCompleter {
 
         String world = claimManager.getSelectionWorld(player);
 
-        // Check world restrictions
         if (claimManager.isWorldDisabled(world)) {
             player.sendMessage(Component.text("Claims are not allowed in that world.", NamedTextColor.RED));
             claimManager.clearSelection(player);
             return true;
         }
 
-        // Check claim limit
         int currentClaims = claimManager.getPlayerClaimCount(player.getUniqueId());
         int maxClaims = claimManager.getMaxClaims(player);
         if (currentClaims >= maxClaims) {
@@ -148,7 +180,6 @@ public class ClaimCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        // Check for duplicate name
         if (claimManager.getClaimByName(player.getUniqueId(), name) != null) {
             player.sendMessage(Component.text("You already have a claim named \"" + name + "\".", NamedTextColor.RED));
             return true;
@@ -162,9 +193,10 @@ public class ClaimCommand implements CommandExecutor, TabCompleter {
         int maxX = Math.max(pos1[0], pos2[0]);
         int maxZ = Math.max(pos1[1], pos2[1]);
 
-        // Check size - use large limits if player is in large mode
         int width = maxX - minX + 1;
         int length = maxZ - minZ + 1;
+
+        // Use large limits if player is in large mode
         int maxSize = claimManager.isLargeMode(player) ? ClaimManager.LARGE_MAX_SIZE : ClaimManager.MAX_SIZE;
         if (width > maxSize || length > maxSize) {
             player.sendMessage(Component.text("Selection too large! Max size is " +
@@ -173,17 +205,16 @@ public class ClaimCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        // Check for overlapping claims
         Claim overlap = claimManager.getOverlappingClaim(world, minX, minZ, maxX, maxZ);
         if (overlap != null) {
             player.sendMessage(Component.text("Your selection overlaps with an existing claim!", NamedTextColor.RED));
             return true;
         }
 
-        // Check that area contains player-placed blocks
+        // Check that the player has placed blocks nearby
         try {
-            boolean hasPlacedBlocks = db.hasPlacedBlocksInArea(world, minX, minZ, maxX, maxZ);
-            if (!hasPlacedBlocks) {
+            boolean hasBlocks = db.hasPlayerBlockNear(world, (minX + maxX) / 2, (minZ + maxZ) / 2, player.getUniqueId());
+            if (!hasBlocks) {
                 player.sendMessage(Component.text("You need to have placed blocks in this area to claim it.", NamedTextColor.RED));
                 player.sendMessage(Component.text("Build something first, then try again.", NamedTextColor.GRAY));
                 return true;
@@ -198,9 +229,10 @@ public class ClaimCommand implements CommandExecutor, TabCompleter {
         try {
             Claim claim = claimManager.createClaim(name, player);
             if (claim != null) {
-                String modeLabel = claimManager.isLargeMode(player) ? " (Large)" : "";
+                boolean isLarge = claimManager.isLargeMode(player);
                 player.sendMessage(Component.empty());
-                player.sendMessage(Component.text("Claim Created!" + modeLabel, NamedTextColor.GREEN, TextDecoration.BOLD));
+                player.sendMessage(Component.text("Claim Created!" + (isLarge ? " (Large)" : ""),
+                        NamedTextColor.GREEN, TextDecoration.BOLD));
                 player.sendMessage(Component.text("Name: ", NamedTextColor.GRAY)
                         .append(Component.text(name, NamedTextColor.GOLD)));
                 player.sendMessage(Component.text("Size: ", NamedTextColor.GRAY)
@@ -209,13 +241,12 @@ public class ClaimCommand implements CommandExecutor, TabCompleter {
                         .append(Component.text(minX + ", " + minZ, NamedTextColor.YELLOW)));
                 player.sendMessage(Component.text("Corner 2: ", NamedTextColor.GRAY)
                         .append(Component.text(maxX + ", " + maxZ, NamedTextColor.YELLOW)));
-                if (claimManager.isLargeMode(player)) {
+                if (isLarge) {
                     player.sendMessage(Component.text("Height: ", NamedTextColor.GRAY)
                             .append(Component.text("Y " + ClaimManager.LARGE_MIN_Y + " to build limit", NamedTextColor.YELLOW)));
                 }
                 player.sendMessage(Component.empty());
 
-                // Remove claim shovel and clear large mode
                 removeClaimShovel(player);
                 claimManager.setLargeMode(player, false);
             } else {
@@ -244,6 +275,7 @@ public class ClaimCommand implements CommandExecutor, TabCompleter {
                 Component.text("Max size: 80x80", NamedTextColor.YELLOW)
                         .decoration(TextDecoration.ITALIC, false)
         ));
+        meta.getPersistentDataContainer().set(CLAIM_SHOVEL_KEY, PersistentDataType.BYTE, (byte) 1);
         meta.setUnbreakable(true);
         shovel.setItemMeta(meta);
         return shovel;
@@ -268,30 +300,28 @@ public class ClaimCommand implements CommandExecutor, TabCompleter {
                 Component.text("OP Only", NamedTextColor.RED)
                         .decoration(TextDecoration.ITALIC, false)
         ));
+        meta.getPersistentDataContainer().set(LARGE_CLAIM_SHOVEL_KEY, PersistentDataType.BYTE, (byte) 1);
         meta.setUnbreakable(true);
         shovel.setItemMeta(meta);
         return shovel;
     }
 
+    // Returns true if the item is ANY claim shovel (normal or large)
     public static boolean isClaimShovel(ItemStack item) {
-        if (item == null || item.getItemMeta() == null) return false;
-        if (item.getType() != Material.GOLDEN_SHOVEL && item.getType() != Material.NETHERITE_SHOVEL) return false;
-        Component name = item.getItemMeta().displayName();
-        if (name == null) return false;
-        String plain = PlainTextComponentSerializer.plainText().serialize(name);
-        return plain.equals("Claim Shovel") || plain.equals("Large Claim Shovel");
+        if (item == null || !item.hasItemMeta()) return false;
+        var pdc = item.getItemMeta().getPersistentDataContainer();
+        return pdc.has(CLAIM_SHOVEL_KEY, PersistentDataType.BYTE) ||
+               pdc.has(LARGE_CLAIM_SHOVEL_KEY, PersistentDataType.BYTE);
     }
 
+    // Returns true only if the item is the large claim shovel
     public static boolean isLargeClaimShovel(ItemStack item) {
-        if (item == null || item.getItemMeta() == null) return false;
-        if (item.getType() != Material.NETHERITE_SHOVEL) return false;
-        Component name = item.getItemMeta().displayName();
-        if (name == null) return false;
-        String plain = PlainTextComponentSerializer.plainText().serialize(name);
-        return plain.equals("Large Claim Shovel");
+        if (item == null || !item.hasItemMeta()) return false;
+        return item.getItemMeta().getPersistentDataContainer()
+                .has(LARGE_CLAIM_SHOVEL_KEY, PersistentDataType.BYTE);
     }
 
-    private void removeClaimShovel(Player player) {
+    public void removeClaimShovel(Player player) {
         for (int i = 0; i < player.getInventory().getSize(); i++) {
             ItemStack item = player.getInventory().getItem(i);
             if (isClaimShovel(item)) {
@@ -322,8 +352,7 @@ public class ClaimCommand implements CommandExecutor, TabCompleter {
                 return List.of("<name>");
             }
             if (args[0].equalsIgnoreCase("giveshovel") && player.isOp()) {
-                // Return online player names
-                return null;
+                return null; // returns online player names
             }
         }
 
