@@ -79,10 +79,6 @@ public class ClaimManager {
         secondCorner.put(player.getUniqueId(), new int[]{x, z});
     }
 
-    public boolean hasFirstCorner(Player player) {
-        return firstCorner.containsKey(player.getUniqueId());
-    }
-
     public boolean hasSelection(Player player) {
         return firstCorner.containsKey(player.getUniqueId()) &&
                secondCorner.containsKey(player.getUniqueId());
@@ -100,6 +96,10 @@ public class ClaimManager {
         return selectionWorld.get(player.getUniqueId());
     }
 
+    public boolean hasFirstCorner(Player player) {
+        return firstCorner.containsKey(player.getUniqueId());
+    }
+
     public void clearSelection(Player player) {
         firstCorner.remove(player.getUniqueId());
         secondCorner.remove(player.getUniqueId());
@@ -115,37 +115,48 @@ public class ClaimManager {
     // =========== CLAIM LIMITS ===========
 
     public int getMaxClaims(Player player) {
-        // Check from highest to lowest
         for (int i = 20; i >= 1; i--) {
             if (player.hasPermission("prismclaims.limit." + i)) {
                 return i;
             }
         }
-        return 2; // default
+        return 2;
     }
 
     public int getPlayerClaimCount(UUID uuid) {
-        int count = 0;
-        for (Claim claim : claims) {
-            if (claim.getOwner().equals(uuid)) count++;
-        }
-        return count;
+        return (int) claims.stream().filter(c -> c.getOwner().equals(uuid)).count();
     }
 
     // =========== CLAIM LOOKUPS ===========
 
+    public List<Claim> getPlayerClaims(UUID uuid) {
+        return claims.stream().filter(c -> c.getOwner().equals(uuid)).toList();
+    }
+
     public Claim getClaimByName(UUID owner, String name) {
+        return claims.stream()
+                .filter(c -> c.getOwner().equals(owner) && c.getName().equalsIgnoreCase(name))
+                .findFirst().orElse(null);
+    }
+
+    public Claim getClaimById(int id) {
+        return claims.stream().filter(c -> c.getId() == id).findFirst().orElse(null);
+    }
+
+    // 2D claim lookup (backward compat - used by AdminCommand, EntityListener)
+    public Claim getClaimAt(String world, int x, int z) {
         for (Claim claim : claims) {
-            if (claim.getOwner().equals(owner) && claim.getName().equalsIgnoreCase(name)) {
+            if (claim.contains(world, x, z)) {
                 return claim;
             }
         }
         return null;
     }
 
+    // 3D claim lookup (checks Y range - used by ProtectionManager)
     public Claim getClaimAt(String world, int x, int y, int z) {
         for (Claim claim : claims) {
-            if (claim.getWorld().equals(world) && claim.contains(x, y, z)) {
+            if (claim.contains(world, x, y, z)) {
                 return claim;
             }
         }
@@ -161,18 +172,6 @@ public class ClaimManager {
             }
         }
         return null;
-    }
-
-    public List<Claim> getPlayerClaims(UUID uuid) {
-        List<Claim> result = new ArrayList<>();
-        for (Claim claim : claims) {
-            if (claim.getOwner().equals(uuid)) result.add(claim);
-        }
-        return result;
-    }
-
-    public List<Claim> getAllClaims() {
-        return Collections.unmodifiableList(claims);
     }
 
     // =========== CLAIM CREATION ===========
@@ -197,46 +196,54 @@ public class ClaimManager {
             maxY = player.getWorld().getMaxHeight();
         }
 
-        Claim claim = new Claim(
-                UUID.randomUUID(),
-                name,
-                player.getUniqueId(),
-                world,
-                minX, maxX, minZ, maxZ,
-                minY, maxY
-        );
+        Claim claim = db.createClaim(name, player.getUniqueId(), world,
+                minX, minZ, maxX, maxZ, minY, maxY);
 
-        db.saveClaim(claim);
-        claims.add(claim);
-        clearSelection(player);
-
+        if (claim != null) {
+            claims.add(claim);
+            clearSelection(player);
+        }
         return claim;
     }
 
     // =========== CLAIM DELETION ===========
 
-    public boolean deleteClaim(UUID owner, String name) throws SQLException {
-        Claim claim = getClaimByName(owner, name);
-        if (claim == null) return false;
-
-        db.deleteClaim(claim.getId());
-        claims.remove(claim);
-        return true;
-    }
-
-    public boolean adminDeleteClaim(UUID owner, String name) throws SQLException {
-        return deleteClaim(owner, name);
+    public boolean deleteClaim(Claim claim) {
+        try {
+            db.deleteClaim(claim.getId());
+            claims.remove(claim);
+            return true;
+        } catch (SQLException e) {
+            logger.severe("Failed to delete claim: " + e.getMessage());
+            return false;
+        }
     }
 
     // =========== PERMISSION MANAGEMENT ===========
 
-    public void addPermission(Claim claim, UUID player) throws SQLException {
-        claim.addPermission(player);
-        db.saveClaimPermission(claim.getId(), player);
+    public boolean addPermission(Claim claim, UUID player) {
+        try {
+            claim.addPermission(player);
+            db.addPermission(claim.getId(), player);
+            return true;
+        } catch (SQLException e) {
+            logger.severe("Failed to add permission: " + e.getMessage());
+            return false;
+        }
     }
 
-    public void removePermission(Claim claim, UUID player) throws SQLException {
-        claim.removePermission(player);
-        db.deleteClaimPermission(claim.getId(), player);
+    public boolean removePermission(Claim claim, UUID player) {
+        try {
+            claim.removePermission(player);
+            db.removePermission(claim.getId(), player);
+            return true;
+        } catch (SQLException e) {
+            logger.severe("Failed to remove permission: " + e.getMessage());
+            return false;
+        }
+    }
+
+    public List<Claim> getAllClaims() {
+        return Collections.unmodifiableList(claims);
     }
 }
