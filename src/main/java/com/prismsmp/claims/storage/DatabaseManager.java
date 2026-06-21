@@ -19,6 +19,11 @@ public class DatabaseManager {
     }
 
     public void initialize() throws SQLException {
+        // Ensure the plugin data folder exists
+        File parentDir = dbFile.getParentFile();
+        if (parentDir != null && !parentDir.exists()) {
+            parentDir.mkdirs();
+        }
         connection = DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
         createTables();
         migrateYColumns();
