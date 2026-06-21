@@ -9,24 +9,26 @@ import com.prismsmp.claims.storage.DatabaseManager;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 
-import org.bukkit.Material;
+import org.bukkit.Bukkit;
+import org.bukkit.Location;
 import org.bukkit.block.Block;
+import org.bukkit.block.BlockFace;
+import org.bukkit.block.BlockState;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
-import org.bukkit.event.block.BlockBreakEvent;
-import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.block.*;
+import org.bukkit.event.entity.EntityChangeBlockEvent;
+import org.bukkit.event.entity.EntityExplodeEvent;
+import org.bukkit.event.player.PlayerBucketEmptyEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.world.StructureGrowEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.sql.SQLException;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
 import java.util.logging.Logger;
 
 public class BlockListener implements Listener {
@@ -37,8 +39,7 @@ public class BlockListener implements Listener {
     private final DatabaseManager db;
     private final Logger logger;
 
-    // Disabled worlds for block tracking
-    private static final java.util.Set<String> DISABLED_TRACK_WORLDS = java.util.Set.of("spawnworld");
+    private static final Set<String> DISABLED_TRACK_WORLDS = Set.of("spawnworld");
 
     public BlockListener(JavaPlugin plugin, ClaimManager claimManager,
                           ProtectionManager protectionManager, DatabaseManager db) {
@@ -53,7 +54,7 @@ public class BlockListener implements Listener {
 
     @EventHandler(priority = EventPriority.HIGH)
     public void onPlayerInteract(PlayerInteractEvent event) {
-        if (event.getAction() != org.bukkit.event.block.Action.RIGHT_CLICK_BLOCK) return;
+        if (event.getAction() != Action.RIGHT_CLICK_BLOCK) return;
         if (event.getHand() != EquipmentSlot.HAND) return;
         if (event.getItem() == null) return;
         if (!ClaimCommand.isClaimShovel(event.getItem())) return;
@@ -68,7 +69,6 @@ public class BlockListener implements Listener {
         int x = block.getX();
         int z = block.getZ();
 
-        // Check disabled worlds
         if (claimManager.isWorldDisabled(world)) {
             player.sendMessage(Component.text("Claims are not allowed in this world.", NamedTextColor.RED));
             return;
@@ -78,7 +78,7 @@ public class BlockListener implements Listener {
             // Setting first corner
             claimManager.setFirstCorner(player, x, z);
 
-            // If they're using the large claim shovel, enable large mode
+            // Auto-enable large mode if using the large shovel
             if (ClaimCommand.isLargeClaimShovel(event.getItem())) {
                 claimManager.setLargeMode(player, true);
             }
@@ -88,7 +88,6 @@ public class BlockListener implements Listener {
             player.sendMessage(Component.text("Right-click another block for corner 2.", NamedTextColor.GRAY));
         } else if (!claimManager.hasSelection(player)) {
             // Setting second corner
-            // Check same world
             if (!world.equals(claimManager.getSelectionWorld(player))) {
                 player.sendMessage(Component.text("Both corners must be in the same world!", NamedTextColor.RED));
                 claimManager.clearSelection(player);
@@ -113,11 +112,10 @@ public class BlockListener implements Listener {
                     .append(Component.text("/claim confirm <name>", NamedTextColor.GOLD))
                     .append(Component.text(" to create your claim.", NamedTextColor.GRAY)));
         } else {
-            // Already have both corners, reset and start over
+            // Already have both corners - reset and start over
             claimManager.clearSelection(player);
             claimManager.setFirstCorner(player, x, z);
 
-            // If they're using the large claim shovel, enable large mode
             if (ClaimCommand.isLargeClaimShovel(event.getItem())) {
                 claimManager.setLargeMode(player, true);
             }
@@ -128,96 +126,149 @@ public class BlockListener implements Listener {
         }
     }
 
-    // =========== BLOCK TRACKING ===========
+    // =========== BLOCK TRACKING (ASYNC) ===========
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBlockPlace(BlockPlaceEvent event) {
-        String world = event.getBlock().getWorld().getName();
-        if (DISABLED_TRACK_WORLDS.contains(world)) return;
-
-        Block block = event.getBlock();
-        try {
-            db.trackBlock(world, block.getX(), block.getY(), block.getZ(), event.getPlayer().getUniqueId());
-        } catch (SQLException e) {
-            logger.warning("Failed to track placed block: " + e.getMessage());
-        }
-    }
-
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onBlockBreak(BlockBreakEvent event) {
-        String world = event.getBlock().getWorld().getName();
-        if (DISABLED_TRACK_WORLDS.contains(world)) return;
-
-        Block block = event.getBlock();
-        try {
-            db.untrackBlock(world, block.getX(), block.getY(), block.getZ());
-        } catch (SQLException e) {
-            logger.warning("Failed to untrack broken block: " + e.getMessage());
-        }
-    }
-
-    // =========== CLAIM PROTECTION (BLOCK BREAK) ===========
-
-    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
-    public void onBlockBreakProtection(BlockBreakEvent event) {
-        Player player = event.getPlayer();
-
-        // Bypass permission
-        if (player.hasPermission("prismclaims.bypass")) return;
-
         Block block = event.getBlock();
         String world = block.getWorld().getName();
+        if (DISABLED_TRACK_WORLDS.contains(world)) return;
 
-        Claim claim = claimManager.getClaimAt(world, block.getX(), block.getY(), block.getZ());
-        if (claim == null) return;
+        int x = block.getX(), y = block.getY(), z = block.getZ();
+        UUID uuid = event.getPlayer().getUniqueId();
 
-        // Check if player is the owner or has permission
-        if (claim.getOwner().equals(player.getUniqueId())) return;
-        if (claim.hasPermission(player.getUniqueId())) return;
+        // Check placement protection
+        if (!protectionManager.canPlaceBlock(event.getPlayer(), block.getLocation())) {
+            Claim claim = claimManager.getClaimAt(world, x, y, z);
+            event.setCancelled(true);
+            if (claim != null) {
+                event.getPlayer().sendMessage(Component.text("You can't build in ", NamedTextColor.RED)
+                        .append(Component.text(claim.getName(), NamedTextColor.GOLD))
+                        .append(Component.text(".", NamedTextColor.RED)));
+            }
+            return;
+        }
 
-        // Check if the block is player-placed (only protect placed blocks)
-        try {
-            boolean isPlaced = protectionManager.isProtectedBlock(world, block.getX(), block.getY(), block.getZ());
-            if (isPlaced) {
-                event.setCancelled(true);
+        // Track the placed block async
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                db.trackBlock(world, x, y, z, uuid);
+            } catch (SQLException e) {
+                logger.warning("Failed to track placed block: " + e.getMessage());
+            }
+        });
+    }
+
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onBlockBreak(BlockBreakEvent event) {
+        Block block = event.getBlock();
+        String world = block.getWorld().getName();
+        Player player = event.getPlayer();
+
+        // Check break protection
+        if (!protectionManager.canBreakBlock(player, block.getLocation())) {
+            Claim claim = claimManager.getClaimAt(world, block.getX(), block.getY(), block.getZ());
+            event.setCancelled(true);
+            if (claim != null) {
                 player.sendMessage(Component.text("This block is protected by ", NamedTextColor.RED)
                         .append(Component.text(claim.getName(), NamedTextColor.GOLD))
                         .append(Component.text(".", NamedTextColor.RED)));
             }
-        } catch (SQLException e) {
-            // Err on the side of protection
+            return;
+        }
+
+        if (DISABLED_TRACK_WORLDS.contains(world)) return;
+
+        int x = block.getX(), y = block.getY(), z = block.getZ();
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                db.untrackBlock(world, x, y, z);
+            } catch (SQLException e) {
+                logger.warning("Failed to untrack broken block: " + e.getMessage());
+            }
+        });
+    }
+
+    // =========== BUCKET PROTECTION ===========
+
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onBucketEmpty(PlayerBucketEmptyEvent event) {
+        Player player = event.getPlayer();
+        Block block = event.getBlock();
+
+        if (!protectionManager.canPlaceBlock(player, block.getLocation())) {
             event.setCancelled(true);
-            logger.warning("Error checking block protection: " + e.getMessage());
+            Claim claim = claimManager.getClaimAt(block.getWorld().getName(),
+                    block.getX(), block.getY(), block.getZ());
+            if (claim != null) {
+                player.sendMessage(Component.text("You can't place blocks in ", NamedTextColor.RED)
+                        .append(Component.text(claim.getName(), NamedTextColor.GOLD))
+                        .append(Component.text(".", NamedTextColor.RED)));
+            }
         }
     }
 
-    // =========== CLAIM PROTECTION (BLOCK PLACE) ===========
+    // =========== EXPLOSION PROTECTION ===========
 
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
-    public void onBlockPlaceProtection(BlockPlaceEvent event) {
-        Player player = event.getPlayer();
-
-        // Bypass permission
-        if (player.hasPermission("prismclaims.bypass")) return;
-
-        Block block = event.getBlock();
-        String world = block.getWorld().getName();
-
-        Claim claim = claimManager.getClaimAt(world, block.getX(), block.getY(), block.getZ());
-        if (claim == null) return;
-
-        // Check if player is the owner or has permission
-        if (claim.getOwner().equals(player.getUniqueId())) return;
-        if (claim.hasPermission(player.getUniqueId())) return;
-
-        // Block placing in someone else's claim
-        event.setCancelled(true);
-        player.sendMessage(Component.text("You can't build in ", NamedTextColor.RED)
-                .append(Component.text(claim.getName(), NamedTextColor.GOLD))
-                .append(Component.text(".", NamedTextColor.RED)));
+    public void onEntityExplode(EntityExplodeEvent event) {
+        filterExplosionBlocks(event.blockList());
     }
 
-    // =========== TREE GROWTH PROTECTION ===========
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onBlockExplode(BlockExplodeEvent event) {
+        filterExplosionBlocks(event.blockList());
+    }
+
+    private void filterExplosionBlocks(List<Block> blocks) {
+        blocks.removeIf(block -> {
+            String world = block.getWorld().getName();
+            return protectionManager.isBlockProtectedFromEnvironment(
+                    world, block.getX(), block.getY(), block.getZ());
+        });
+    }
+
+    // =========== PISTON PROTECTION ===========
+
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onPistonExtend(BlockPistonExtendEvent event) {
+        handlePistonMove(event.getBlocks(), event.getDirection());
+    }
+
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onPistonRetract(BlockPistonRetractEvent event) {
+        handlePistonMove(event.getBlocks(), event.getDirection());
+    }
+
+    private void handlePistonMove(List<Block> blocks, BlockFace direction) {
+        // Track block movements async
+        List<int[]> movements = new ArrayList<>();
+        String world = null;
+
+        for (Block block : blocks) {
+            if (world == null) world = block.getWorld().getName();
+            int fromX = block.getX(), fromY = block.getY(), fromZ = block.getZ();
+            int toX = fromX + direction.getModX();
+            int toY = fromY + direction.getModY();
+            int toZ = fromZ + direction.getModZ();
+            movements.add(new int[]{fromX, fromY, fromZ, toX, toY, toZ});
+        }
+
+        if (world == null || movements.isEmpty()) return;
+
+        String finalWorld = world;
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            for (int[] m : movements) {
+                try {
+                    db.moveBlock(finalWorld, m[0], m[1], m[2], m[3], m[4], m[5]);
+                } catch (SQLException e) {
+                    logger.warning("Failed to track piston move: " + e.getMessage());
+                }
+            }
+        });
+    }
+
+    // =========== STRUCTURE GROWTH PROTECTION ===========
 
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onStructureGrow(StructureGrowEvent event) {
@@ -227,16 +278,60 @@ public class BlockListener implements Listener {
         if (player.hasPermission("prismclaims.bypass")) return;
 
         String world = event.getLocation().getWorld().getName();
+        UUID playerUuid = player.getUniqueId();
 
-        // Remove any blocks that would grow into a protected claim
-        Iterator<org.bukkit.block.BlockState> iterator = event.getBlocks().iterator();
-        while (iterator.hasNext()) {
-            org.bukkit.block.BlockState state = iterator.next();
-            Claim claim = claimManager.getClaimAt(world, state.getX(), state.getY(), state.getZ());
-            if (claim != null && !claim.getOwner().equals(player.getUniqueId()) &&
-                !claim.hasPermission(player.getUniqueId())) {
-                iterator.remove();
+        // Remove blocks that would grow into a claim the player isn't authorized in
+        List<BlockState> toRemove = new ArrayList<>();
+        for (BlockState state : event.getBlocks()) {
+            Claim claim = claimManager.getClaimAt(world, state.getX(), state.getZ());
+            if (claim != null && !claim.isAuthorized(playerUuid)) {
+                toRemove.add(state);
             }
+        }
+        event.getBlocks().removeAll(toRemove);
+
+        // Track grown blocks async
+        List<int[]> positions = new ArrayList<>();
+        for (BlockState state : event.getBlocks()) {
+            positions.add(new int[]{state.getX(), state.getY(), state.getZ()});
+        }
+        if (!positions.isEmpty()) {
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                try {
+                    db.trackBlocksBatch(world, positions, playerUuid);
+                } catch (SQLException e) {
+                    logger.warning("Failed to track structure growth: " + e.getMessage());
+                }
+            });
+        }
+    }
+
+    // =========== ENTITY BLOCK CHANGE PROTECTION ===========
+
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onEntityChangeBlock(EntityChangeBlockEvent event) {
+        Block block = event.getBlock();
+        String world = block.getWorld().getName();
+        int x = block.getX(), y = block.getY(), z = block.getZ();
+
+        if (protectionManager.isBlockProtectedFromEnvironment(world, x, y, z)) {
+            event.setCancelled(true);
+            return;
+        }
+
+        // Track block movement for falling blocks (sand/gravel)
+        if (event.getEntity() instanceof org.bukkit.entity.FallingBlock) {
+            Location to = event.getEntity().getLocation();
+            int toX = to.getBlockX(), toY = to.getBlockY(), toZ = to.getBlockZ();
+            String toWorld = to.getWorld().getName();
+
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                try {
+                    db.moveBlock(world, x, y, z, toX, toY, toZ);
+                } catch (SQLException e) {
+                    logger.warning("Failed to track falling block: " + e.getMessage());
+                }
+            });
         }
     }
 }
