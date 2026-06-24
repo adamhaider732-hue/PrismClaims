@@ -13,17 +13,12 @@ public class DatabaseManager {
     private final File dbFile;
     private final Logger logger;
 
-    public DatabaseManager(File dbFile, Logger logger) {
-        this.dbFile = dbFile;
+    public DatabaseManager(File dataFolder, Logger logger) {
+        this.dbFile = new File(dataFolder, "claims.db");
         this.logger = logger;
     }
 
     public void initialize() throws SQLException {
-        // Ensure the plugin data folder exists
-        File parentDir = dbFile.getParentFile();
-        if (parentDir != null && !parentDir.exists()) {
-            parentDir.mkdirs();
-        }
         connection = DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
         createTables();
         migrateYColumns();
